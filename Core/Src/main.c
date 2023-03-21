@@ -22,7 +22,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <string.h>
+#include <stdio.h> 			// format data
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -60,7 +61,87 @@ const osMessageQueueAttr_t pipe_queue_attributes = {
   .name = "pipe_queue"
 };
 /* USER CODE BEGIN PV */
+void ADC_Init()
+{
+	// set RCC gpio Pin A
+	// set RCC cho ADC1
+	__HAL_RCC_ADC1_CLK_ENABLE();
+	uint32_t* CR2 = (uint32_t*)0x40012008;
+	uint32_t* SMPR1 = (uint32_t*)0x4001200c;
+	uint32_t* SMPR2 = (uint32_t*)0x40012010;
+	uint32_t* JSQR = (uint32_t*)0x40012038;
 
+	*SMPR1 |= (0b111 << 18);					// xác định hơn 15 cycles
+	*SMPR2 |= (0b111 << 0);
+	*JSQR &= ~(0b11 << 20); 					// 1 conversion
+	*JSQR |= (16 << 15);						// xác định channal 16 vào JSQ4
+
+	*CR2 |= (0b01 << 20) | (0b1 << 0);			// xác định bit 20 trigger Injected ADC
+												//bit 0 enable ADC
+	uint32_t* CCR = (uint32_t*)0x40012304;
+	*CCR |= (0b1 << 23);
+}
+
+uint16_t Read_ADC()
+{
+	uint32_t* CR2 = (uint32_t*)0x40012008;
+	uint32_t* SR = (uint32_t*)0x40012000;
+
+	*CR2 |= (0b1 << 22);
+	while(((*SR >> 2) & 1) == 0) {osDelay(1);};
+	*SR &= ~(0b1 << 2);
+
+	uint32_t* JDR1 = (uint32_t*)0x4001203c;
+	return *JDR1;
+}
+
+void UART_Init()
+{
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	__HAL_RCC_USART2_CLK_ENABLE();
+
+	uint32_t* GPIOA_MODER = (uint32_t*)0x40020000;
+	*GPIOA_MODER &= ~(0b1111 << 4); // set PIN2,3
+	*GPIOA_MODER |= (0b10 << 4) | (0b10 << 6);// Pin2,3 Analog
+	uint32_t* GPIOA_AFRL = (uint32_t*)0x40020020;
+	*GPIOA_AFRL |= (7 << 8) | (7 << 12);
+
+	// set baud rate 9600
+	uint32_t* UART2_BRR = (uint32_t*)0x40004408;
+	*UART2_BRR = (104 << 4) | 3;
+
+	//set 13 enable UART, set 2 r/w enable TX, set 3 r/w enable RX
+	// set 5 enable Interrupt of UART
+	//size 8 byte and check chan le
+	uint32_t* UART2_CR1 = (uint32_t*)0x4000440c;
+	*UART2_CR1 |= (0b1 << 13) | (0b1 << 2) | (0b1 << 3);// | (0b1 << 5);
+
+	//set enable DMA of UART
+	uint32_t* UART2_CR3 = (uint32_t*)0x40004414;
+	*UART2_CR3 |= (0b1 << 6);
+}
+
+void UART_Send_byte(char data)
+{
+	uint32_t* UART2_SR = (uint32_t*)0x40004400;
+	uint32_t* UART2_DR = (uint32_t*)0x40004404;
+
+	//set TXE if TXE set 1 to return;
+	while(((*UART2_SR >> 7) & 1) != 1){osDelay(1);};
+	*UART2_DR = data;
+	// set TC if TC set 0 to return
+	while(((*UART2_SR >> 6) & 1) != 0){osDelay(1);};
+	//*UART2_SR &= ~(1 << 6);
+}
+
+void UART_Send_Arr(char* arr)
+{
+	int str_len = strlen(arr);
+	for(int i = 0 ; i < str_len; i++)
+	{
+		UART_Send_byte(arr[i]);
+	}
+}
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -231,11 +312,18 @@ static void MX_GPIO_Init(void)
 void send_data_task(void *argument)
 {
   /* USER CODE BEGIN 5 */
+	UART_Init();
+	float temp = 0;
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+	for(;;)
+	{
+		osMessageQueueGet(pipe_queueHandle, &temp, (void*)osPriorityNormal, 10000);
+		char msg[32] = {0};
+		char frac = (int)((temp - (int)temp) * 100);
+		sprintf(msg, "temp: %d.%d *C\r\n", (int)temp, frac);
+		UART_Send_Arr(msg);
+		osDelay(1000);
+	}
   /* USER CODE END 5 */
 }
 
@@ -249,11 +337,20 @@ void send_data_task(void *argument)
 void read_ss_temp_task(void *argument)
 {
   /* USER CODE BEGIN read_ss_temp_task */
+	ADC_Init();
+	uint16_t data_raw = 0;
+	float vin = 0;
+	float temp = 0;
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+	for(;;)
+	{
+		data_raw = Read_ADC();
+		vin = (data_raw * 3.0) / 4095.0;
+		temp = ((vin - 0.76) / 0.0025) + 25;
+		osMessageQueuePut(pipe_queueHandle, &temp, osPriorityNormal, 10000);
+		//temp_global = temp;
+		osDelay(1000);
+	}
   /* USER CODE END read_ss_temp_task */
 }
 
